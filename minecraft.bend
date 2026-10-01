@@ -574,6 +574,9 @@ def MC.voxel_oob(oob: Bool, +seed: U32, +edits: List<&2, Edit>, +x: U32, +y: U32
 def MC.voxel(+seed: U32, +edits: List<&2, Edit>, +x: U32, +y: U32, +z: U32) -> U32:
   MC.voxel_oob(Bool.not(W.World.in_bounds(x, y, z)), seed, edits, x, y, z)
 
+def MC.eye_water(+seed: U32, +edits: List<&2, Edit>, px: F32, py: F32, pz: F32) -> Bool:
+  U32.is_eq(MC.voxel(seed, edits, F32.to_u32(px), F32.to_u32(py), F32.to_u32(pz)), 7)
+
 # ---------------- raymarch (pure, parallel-safe) ----------------
 
 # Face id from dominant ray axis (0 top,1 bottom,2 +x,3 -x,4 +z,5 -z).
@@ -628,23 +631,60 @@ def MC.sky_fin(cloud: Bool, sun: U32) -> U32:
 def MC.sky_at(+dx: F32, +dy: F32, +dz: F32, +time: F32, x: F32, z: F32) -> U32:
   MC.sky_fin(R.Render.cloud_hit(x, z, time), R.Render.sun_color(dx, dy, dz, time))
 
+def MC.tex_hash(+ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  +a = (ix * 73 : U32)
+  +b = (iy * 151 : U32)
+  +c = (iz * 229 : U32)
+  +d = (face * 37 : U32)
+  U32.mod((((a + b : U32) + c : U32) + d : U32), 16)
+
+def MC.tex_br(h: U32) -> F32:
+  (0.82 + (U32.to_f32(h) * 0.012 : F32) : F32)
+
+def MC.tex_scale(+color: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  +f = MC.tex_br(MC.tex_hash(ix, iy, iz, face))
+  r g = R.Render.shade_chan(color, 16n, f) R.Render.shade_chan(color, 8n, f)
+  b = R.Render.shade_chan(color, 0n, f)
+  R.Render.pack(r, g, b)
+
+def MC.daylight(+time: F32) -> F32:
+  +ang = (time * 6.2831853 : F32)
+  +e = F32.sin(ang)
+  +dl = F32.clamp(((e + 0.25 : F32) * 2.0 : F32), 0.0, 1.0)
+  (0.3 + (dl * 0.7 : F32) : F32)
+
+def MC.day_scale(+color: U32, +time: F32) -> U32:
+  +f = MC.daylight(time)
+  r g = R.Render.shade_chan(color, 16n, f) R.Render.shade_chan(color, 8n, f)
+  b = R.Render.shade_chan(color, 0n, f)
+  R.Render.pack(r, g, b)
+
+def MC.hit_shade(+bid: U32, +steps: U32, +dx: F32, +dy: F32, +dz: F32, +ix: U32, +iy: U32, +iz: U32, +time: F32) -> U32:
+  +face = MC.face_of(dx, dy, dz)
+  +tex = MC.tex_scale(B.Block.color(bid), ix, iy, iz, face)
+  +sh = R.Render.shade_face(tex, steps, face)
+  MC.day_scale(sh, time)
+
 # Single self-recursive raymarcher (Bend forbids mutual recursion, so the
 # step/hit/march trio is one def). bid/empty ride along as params, seeded
 # with (0, True) by pixel_go; each step computes the next pair as call args.
-def MC.march(fuel: Nat, +seed: U32, +edits: List<&2, Edit>, ox: F32, oy: F32, oz: F32, +dx: F32, +dy: F32, +dz: F32, bid: U32, empty: Bool, +steps: U32, +time: F32) -> U32:
+def MC.march(fuel: Nat, +seed: U32, +edits: List<&2, Edit>, ox: F32, oy: F32, oz: F32, +dx: F32, +dy: F32, +dz: F32, bid: U32, empty: Bool, +ix: U32, +iy: U32, +iz: U32, +steps: U32, +time: F32) -> U32:
   match fuel empty:
     case 0n False{}:
       MC.sky_at(dx, dy, dz, time, ox, oz)
     case 0n True{}:
       MC.sky_at(dx, dy, dz, time, ox, oz)
     case 1n+f False{}:
-      R.Render.shade_face(B.Block.color(bid), steps, MC.face_of(dx, dy, dz))
+      MC.hit_shade(bid, steps, dx, dy, dz, ix, iy, iz, time)
     case 1n+f True{}:
       +nx = (ox + (dx * 0.25 : F32) : F32)
       +ny = (oy + (dy * 0.25 : F32) : F32)
       +nz = (oz + (dz * 0.25 : F32) : F32)
-      +nb = MC.voxel(seed, edits, F32.to_u32(F32.floor(nx)), F32.to_u32(F32.floor(ny)), F32.to_u32(F32.floor(nz)))
-      MC.march(f, seed, edits, nx, ny, nz, dx, dy, dz, nb, U32.is_zero(nb), (steps + 1 : U32), time)
+      +jx = F32.to_u32(F32.floor(nx))
+      +jy = F32.to_u32(F32.floor(ny))
+      +jz = F32.to_u32(F32.floor(nz))
+      +nb = MC.voxel(seed, edits, jx, jy, jz)
+      MC.march(f, seed, edits, nx, ny, nz, dx, dy, dz, nb, U32.is_zero(nb), jx, jy, jz, (steps + 1 : U32), time)
 
 # ---------------- pixels + image ----------------
 
@@ -806,53 +846,60 @@ def MC.post_hearts(is_row: Bool, +x: U32, hp: U32, food: U32, base: U32) -> U32:
 def MC.post_flash(base: U32, hurt: U32) -> U32:
   R.Render.hurt_flash(base, hurt)
 
-def MC.pixel_post(+x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, base: U32) -> U32:
+def MC.post_water(uw: Bool, c: U32) -> U32:
+  match uw:
+    case True{}:
+      R.Render.water_tint(c)
+    case False{}:
+      c
+
+def MC.pixel_post(+x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +uw: Bool, base: U32) -> U32:
   +c = MC.cross(R.Render.is_cross(x, y, MC.win_w(), MC.win_h()), base)
   +h = MC.hud_go(U32.is_ge(y, MC.hud_bar()), x, sel, c)
   +r = MC.post_hearts(Bool.and(U32.is_ge(y, MC.heart_top()), U32.is_lt(y, MC.heart_bot())), x, hp, food, h)
-  MC.post_flash(r, hurt)
+  MC.post_water(uw, MC.post_flash(r, hurt))
 
-def MC.pixel_pick(hit: Bool, mc: U32, +seed: U32, +edits: List<&2, Edit>, ox: F32, oy: F32, oz: F32, +dx: F32, +dy: F32, +dz: F32, +x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +time: F32) -> U32:
+def MC.pixel_pick(hit: Bool, mc: U32, +seed: U32, +edits: List<&2, Edit>, ox: F32, oy: F32, oz: F32, +dx: F32, +dy: F32, +dz: F32, +x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +uw: Bool, +time: F32) -> U32:
   match hit:
     case True{}:
-      MC.pixel_post(x, y, sel, hp, food, hurt, mc)
+      MC.pixel_post(x, y, sel, hp, food, hurt, uw, mc)
     case False{}:
-      MC.pixel_post(x, y, sel, hp, food, hurt, MC.march(32n, seed, edits, ox, oy, oz, dx, dy, dz, 0, True{}, 0, time))
+      MC.pixel_post(x, y, sel, hp, food, hurt, uw, MC.march(48n, seed, edits, ox, oy, oz, dx, dy, dz, 0, True{}, 0, 0, 0, 0, time))
 
-def MC.pixel_mob(mhit: U32 & Bool, +seed: U32, +edits: List<&2, Edit>, ox: F32, oy: F32, oz: F32, +dx: F32, +dy: F32, +dz: F32, +x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +time: F32) -> U32:
+def MC.pixel_mob(mhit: U32 & Bool, +seed: U32, +edits: List<&2, Edit>, ox: F32, oy: F32, oz: F32, +dx: F32, +dy: F32, +dz: F32, +x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +uw: Bool, +time: F32) -> U32:
   (mc, mh) = mhit
-  MC.pixel_pick(mh, mc, seed, edits, ox, oy, oz, dx, dy, dz, x, y, sel, hp, food, hurt, time)
+  MC.pixel_pick(mh, mc, seed, edits, ox, oy, oz, dx, dy, dz, x, y, sel, hp, food, hurt, uw, time)
 
-def MC.pixel_go(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, r: R.Ray, +x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +time: F32) -> U32:
+def MC.pixel_go(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, r: R.Ray, +x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +uw: Bool, +time: F32) -> U32:
   match r:
     case R.R{+ox, +oy, +oz, +dx, +dy, +dz}:
-      MC.pixel_mob(MC.mob_dot(mobs, ox, oy, oz, dx, dy, dz), seed, edits, ox, oy, oz, dx, dy, dz, x, y, sel, hp, food, hurt, time)
+      MC.pixel_mob(MC.mob_dot(mobs, ox, oy, oz, dx, dy, dz), seed, edits, ox, oy, oz, dx, dy, dz, x, y, sel, hp, food, hurt, uw, time)
 
-def MC.pixel(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, +cam: R.Cam, +x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +time: F32) -> U32:
-  MC.pixel_go(seed, edits, mobs, R.Render.pixel_ray(cam, U32.to_f32(x), U32.to_f32(y), MC.win_w(), MC.win_h()), x, y, sel, hp, food, hurt, time)
+def MC.pixel(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, +cam: R.Cam, +x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +uw: Bool, +time: F32) -> U32:
+  MC.pixel_go(seed, edits, mobs, R.Render.pixel_ray(cam, U32.to_f32(x), U32.to_f32(y), MC.win_w(), MC.win_h()), x, y, sel, hp, food, hurt, uw, time)
 
-def MC.build(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, +cam: R.Cam, +size: Nat, +x0: U32, +y0: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +time: F32) -> Image:
+def MC.build(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, +cam: R.Cam, +size: Nat, +x0: U32, +y0: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +uw: Bool, +time: F32) -> Image:
   match size:
     case 0n:
-      Pix{MC.pixel(seed, edits, mobs, cam, x0, y0, sel, hp, food, hurt, time)}
+      Pix{MC.pixel(seed, edits, mobs, cam, x0, y0, sel, hp, food, hurt, uw, time)}
     case 1n+s:
       +half = U32.pow(2, s)
       +x1 = (x0 + half : U32)
       +y1 = (y0 + half : U32)
-      tl tr = MC.build(seed, edits, mobs, cam, s, x0, y0, sel, hp, food, hurt, time) MC.build(seed, edits, mobs, cam, s, x1, y0, sel, hp, food, hurt, time)
-      bl br = MC.build(seed, edits, mobs, cam, s, x0, y1, sel, hp, food, hurt, time) MC.build(seed, edits, mobs, cam, s, x1, y1, sel, hp, food, hurt, time)
+      tl tr = MC.build(seed, edits, mobs, cam, s, x0, y0, sel, hp, food, hurt, uw, time) MC.build(seed, edits, mobs, cam, s, x1, y0, sel, hp, food, hurt, uw, time)
+      bl br = MC.build(seed, edits, mobs, cam, s, x0, y1, sel, hp, food, hurt, uw, time) MC.build(seed, edits, mobs, cam, s, x1, y1, sel, hp, food, hurt, uw, time)
       Qua{tl, tr, bl, br}
 
-def MC.frame(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, +cam: R.Cam, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +time: F32) -> Image:
-  MC.build(seed, edits, mobs, cam, MC.quality(), 0, 0, sel, hp, food, hurt, time)
+def MC.frame(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, +cam: R.Cam, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +uw: Bool, +time: F32) -> Image:
+  MC.build(seed, edits, mobs, cam, MC.quality(), 0, 0, sel, hp, food, hurt, uw, time)
 
 # ---------------- view ----------------
 
-def MC.view_cam(+seed: U32, +px: F32, +py: F32, +pz: F32, +yaw: F32, +pitch: F32, +vy: F32, +og: Bool, +fly: Bool, +hb: PL.Hotbar, +edits: List<&2, Edit>, +hp: U32, +food: U32, +hurt: U32, +mobs: List<&2, MB.Mob>, +tickn: U32, +time: F32, sel: U32, cam: R.Cam) -> Pair(State, Image):
-  (S{seed, px, py, pz, yaw, pitch, vy, og, fly, hb, edits, hp, food, hurt, mobs, tickn, time}, MC.frame(seed, edits, mobs, cam, sel, hp, food, hurt, time))
+def MC.view_cam(+seed: U32, +px: F32, +py: F32, +pz: F32, +yaw: F32, +pitch: F32, +vy: F32, +og: Bool, +fly: Bool, +hb: PL.Hotbar, +edits: List<&2, Edit>, +hp: U32, +food: U32, +hurt: U32, +mobs: List<&2, MB.Mob>, +tickn: U32, +time: F32, sel: U32, uw: Bool, cam: R.Cam) -> Pair(State, Image):
+  (S{seed, px, py, pz, yaw, pitch, vy, og, fly, hb, edits, hp, food, hurt, mobs, tickn, time}, MC.frame(seed, edits, mobs, cam, sel, hp, food, hurt, uw, time))
 
 def MC.view_go(+seed: U32, +px: F32, +py: F32, +pz: F32, +yaw: F32, +pitch: F32, +vy: F32, +og: Bool, +fly: Bool, +hb: PL.Hotbar, +edits: List<&2, Edit>, +hp: U32, +food: U32, +hurt: U32, +mobs: List<&2, MB.Mob>, +tickn: U32, +time: F32, sel: U32) -> Pair(State, Image):
-  MC.view_cam(seed, px, py, pz, yaw, pitch, vy, og, fly, hb, edits, hp, food, hurt, mobs, tickn, time, sel, R.Render.cam_from(px, py, pz, yaw, pitch, 1.2))
+  MC.view_cam(seed, px, py, pz, yaw, pitch, vy, og, fly, hb, edits, hp, food, hurt, mobs, tickn, time, sel, MC.eye_water(seed, edits, px, py, pz), R.Render.cam_from(px, py, pz, yaw, pitch, 1.2))
 
 def view(state: State) -> Pair(State, Image):
   match state:
