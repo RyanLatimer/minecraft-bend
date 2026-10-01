@@ -1,0 +1,7 @@
+# Bend build outputs
+bendcraft
+bench
+*.c
+*.js
+*.gpu
+/tmp/
