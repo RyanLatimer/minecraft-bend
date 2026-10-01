@@ -1,5 +1,7 @@
 # BendCraft — a voxel Minecraft clone in Bend 2.0.5
 
+Also on [BendHub](https://hub.bend-lang.com/): `import 0xc517d5d3635f5bc3ec47170caccaebf0/minecraft.bend as Minecraft`
+
 Procedural terrain (biomes, caves, ores, trees), software raycaster with
 face shading / sun / clouds / fog, survival (HP, hunger, fall damage,
 mobs with day/night AI), block break/place, 9-slot hotbar, day cycle,
