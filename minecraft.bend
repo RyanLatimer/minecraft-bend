@@ -659,9 +659,151 @@ def MC.day_scale(+color: U32, +time: F32) -> U32:
   b = R.Render.shade_chan(color, 0n, f)
   R.Render.pack(r, g, b)
 
-def MC.hit_shade(+bid: U32, +steps: U32, +dx: F32, +dy: F32, +dz: F32, +ix: U32, +iy: U32, +iz: U32, +time: F32) -> U32:
+# ---------------- procedural textures ----------------
+# No image sampler exists in Bend, so faces get 4x4 procedural texels from
+# the hit voxel + fractional hit position. (u,v) depend on the face plane:
+# top/bottom use (x,z), x-faces use (z,y), z-faces use (x,y).
+
+def MC.frac(+a: F32) -> F32:
+  (a - U32.to_f32(F32.to_u32(F32.floor(a))) : F32)
+
+def MC.tex_uv_go(top: Bool, side_x: Bool, +hx: F32, +hy: F32, +hz: F32) -> F32 & F32:
+  match top side_x:
+    case True{} _:
+      (MC.frac(hx), MC.frac(hz))
+    case False{} True{}:
+      (MC.frac(hz), MC.frac(hy))
+    case False{} False{}:
+      (MC.frac(hx), MC.frac(hy))
+
+def MC.tex_uv(+face: U32, +hx: F32, +hy: F32, +hz: F32) -> F32 & F32:
+  MC.tex_uv_go(Bool.or(U32.is_eq(face, 0), U32.is_eq(face, 1)), Bool.or(U32.is_eq(face, 2), U32.is_eq(face, 3)), hx, hy, hz)
+
+def MC.pick2(on: Bool, a: U32, b: U32) -> U32:
+  match on:
+    case True{}:
+      a
+    case False{}:
+      b
+
+def MC.checker(tu: U32, tv: U32, a: U32, b: U32) -> U32:
+  MC.pick2(U32.is_zero(U32.mod((tu + tv : U32), 2)), a, b)
+
+def MC.pat_grass_side(top_row: Bool, tu: U32, tv: U32) -> U32:
+  match top_row:
+    case True{}:
+      6142012
+    case False{}:
+      MC.checker(tu, tv, 9067051, 7946015)
+
+def MC.pat_grass(top: Bool, bot: Bool, +tu: U32, +tv: U32) -> U32:
+  match top bot:
+    case True{} _:
+      MC.checker(tu, tv, 6142012, 4885808)
+    case False{} True{}:
+      7946015
+    case False{} False{}:
+      MC.pat_grass_side(U32.is_zero(tv), tu, tv)
+
+def MC.pat_mortar(tu: U32, tv: U32) -> U32:
+  MC.pick2(Bool.or(U32.is_zero(tu), U32.is_zero(tv)), 7237230, 8947848)
+
+def MC.pat_wood(tu: U32) -> U32:
+  MC.pick2(U32.is_zero(U32.mod(tu, 2)), 7031338, 4860192)
+
+def MC.pat_dither(tu: U32, tv: U32, ix: U32, iz: U32, a: U32, b: U32) -> U32:
+  MC.pick2(U32.is_zero(U32.mod(((((tu + tv : U32) + ix : U32) + iz : U32) + 0 : U32), 2)), a, b)
+
+def MC.pat11(eq: Bool, +bid: U32, +tu: U32, +tv: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  match eq:
+    case True{}:
+      MC.pick2(U32.is_zero(U32.mod(MC.tex_hash(ix, iy, iz, face), 4)), 1710618, 8947848)
+    case False{}:
+      MC.tex_scale(B.Block.color(bid), ix, iy, iz, face)
+
+def MC.pat10(eq: Bool, +bid: U32, +tu: U32, +tv: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  match eq:
+    case True{}:
+      MC.pick2(Bool.or(Bool.or(U32.is_zero(tu), U32.is_zero(tv)), Bool.or(U32.is_eq(tu, 3), U32.is_eq(tv, 3))), 16777215, 14545663)
+    case False{}:
+      MC.pat11(U32.is_eq(bid, 11), bid, tu, tv, ix, iy, iz, face)
+
+def MC.pat09(eq: Bool, +bid: U32, +tu: U32, +tv: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  match eq:
+    case True{}:
+      MC.pick2(U32.is_eq(tv, 3), 8023350, 11569743)
+    case False{}:
+      MC.pat10(U32.is_eq(bid, 10), bid, tu, tv, ix, iy, iz, face)
+
+def MC.pat08(eq: Bool, +bid: U32, +tu: U32, +tv: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  match eq:
+    case True{}:
+      MC.pat_dither(tu, tv, ix, iz, 3355443, 1118481)
+    case False{}:
+      MC.pat09(U32.is_eq(bid, 9), bid, tu, tv, ix, iy, iz, face)
+
+def MC.pat07(eq: Bool, +bid: U32, +tu: U32, +tv: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  match eq:
+    case True{}:
+      MC.pick2(U32.is_zero(U32.mod(tu, 2)), 3895252, 3108800)
+    case False{}:
+      MC.pat08(U32.is_eq(bid, 8), bid, tu, tv, ix, iy, iz, face)
+
+def MC.pat06(eq: Bool, +bid: U32, +tu: U32, +tv: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  match eq:
+    case True{}:
+      MC.pat_dither(tu, tv, ix, iz, 14931867, 14079754)
+    case False{}:
+      MC.pat07(U32.is_eq(bid, 7), bid, tu, tv, ix, iy, iz, face)
+
+def MC.pat05(eq: Bool, +bid: U32, +tu: U32, +tv: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  match eq:
+    case True{}:
+      MC.pat_dither(tu, tv, ix, iz, 3050286, 2061855)
+    case False{}:
+      MC.pat06(U32.is_eq(bid, 6), bid, tu, tv, ix, iy, iz, face)
+
+def MC.pat04(eq: Bool, +bid: U32, +tu: U32, +tv: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  match eq:
+    case True{}:
+      MC.pat_wood(tu)
+    case False{}:
+      MC.pat05(U32.is_eq(bid, 5), bid, tu, tv, ix, iy, iz, face)
+
+def MC.pat03(eq: Bool, +bid: U32, +tu: U32, +tv: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  match eq:
+    case True{}:
+      MC.pat_mortar(tu, tv)
+    case False{}:
+      MC.pat04(U32.is_eq(bid, 4), bid, tu, tv, ix, iy, iz, face)
+
+def MC.pat02(eq: Bool, +bid: U32, +tu: U32, +tv: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  match eq:
+    case True{}:
+      MC.checker(tu, tv, 9067051, 7946015)
+    case False{}:
+      MC.pat03(U32.is_eq(bid, 3), bid, tu, tv, ix, iy, iz, face)
+
+def MC.pat01(eq: Bool, +bid: U32, +tu: U32, +tv: U32, +ix: U32, +iy: U32, +iz: U32, +face: U32) -> U32:
+  match eq:
+    case True{}:
+      MC.pat_grass(U32.is_eq(face, 0), U32.is_eq(face, 1), tu, tv)
+    case False{}:
+      MC.pat02(U32.is_eq(bid, 2), bid, tu, tv, ix, iy, iz, face)
+
+def MC.pat(+bid: U32, +face: U32, tu: U32, tv: U32, +ix: U32, +iy: U32, +iz: U32) -> U32:
+  MC.pat01(U32.is_eq(bid, 1), bid, tu, tv, ix, iy, iz, face)
+
+def MC.texel_go(uv: F32 & F32, +bid: U32, +face: U32, +ix: U32, +iy: U32, +iz: U32) -> U32:
+  (u, v) = uv
+  MC.pat(bid, face, F32.to_u32((u * 4.0 : F32)), F32.to_u32((v * 4.0 : F32)), ix, iy, iz)
+
+def MC.texel(+bid: U32, +face: U32, +ix: U32, +iy: U32, +iz: U32, +hx: F32, +hy: F32, +hz: F32) -> U32:
+  MC.texel_go(MC.tex_uv(face, hx, hy, hz), bid, face, ix, iy, iz)
+
+def MC.hit_shade(+bid: U32, +steps: U32, +dx: F32, +dy: F32, +dz: F32, +ix: U32, +iy: U32, +iz: U32, +hx: F32, +hy: F32, +hz: F32, +time: F32) -> U32:
   +face = MC.face_of(dx, dy, dz)
-  +tex = MC.tex_scale(B.Block.color(bid), ix, iy, iz, face)
+  +tex = MC.texel(bid, face, ix, iy, iz, hx, hy, hz)
   +sh = R.Render.shade_face(tex, steps, face)
   MC.day_scale(sh, time)
 
@@ -675,7 +817,7 @@ def MC.march(fuel: Nat, +seed: U32, +edits: List<&2, Edit>, ox: F32, oy: F32, oz
     case 0n True{}:
       MC.sky_at(dx, dy, dz, time, ox, oz)
     case 1n+f False{}:
-      MC.hit_shade(bid, steps, dx, dy, dz, ix, iy, iz, time)
+      MC.hit_shade(bid, steps, dx, dy, dz, ix, iy, iz, ox, oy, oz, time)
     case 1n+f True{}:
       +nx = (ox + (dx * 0.25 : F32) : F32)
       +ny = (oy + (dy * 0.25 : F32) : F32)
@@ -949,7 +1091,7 @@ def MC.do_strafe(s: State, +side: F32) -> State:
     case S{+seed, +px, +py, +pz, +yaw, +pitch, +vy, +og, +fly, +hb, +edits, +hp, +food, +hurt, +mobs, +tickn, +time}:
       +sx = F32.sin(yaw)
       +cx = F32.cos(yaw)
-      MC.move_apply(S{seed, px, py, pz, yaw, pitch, vy, og, fly, hb, edits, hp, food, hurt, mobs, tickn, time}, (F32.neg(sx) * side : F32), (cx * side : F32))
+      MC.move_apply(S{seed, px, py, pz, yaw, pitch, vy, og, fly, hb, edits, hp, food, hurt, mobs, tickn, time}, (F32.neg(cx) * side : F32), (sx * side : F32))
 
 def MC.spd_snk(snk: Bool) -> F32:
   match snk:
@@ -997,7 +1139,9 @@ def MC.do_move(s: State, f: Bool, b: Bool, l: Bool, r: Bool, +spd: F32) -> State
       +sd = MC.mv_side(l, r, spd)
       +cy = F32.cos(yaw)
       +sy = F32.sin(yaw)
-      MC.move_apply(S{seed, px, py, pz, yaw, pitch, vy, og, fly, hb, edits, hp, food, hurt, mobs, tickn, time}, ((cy * fw : F32) + (F32.neg(sy) * sd : F32) : F32), ((sy * fw : F32) + (cy * sd : F32) : F32))
+      +nsy = F32.neg(sy)
+      +ncy = F32.neg(cy)
+      MC.move_apply(S{seed, px, py, pz, yaw, pitch, vy, og, fly, hb, edits, hp, food, hurt, mobs, tickn, time}, ((nsy * fw : F32) + (ncy * sd : F32) : F32), ((ncy * fw : F32) + (sy * sd : F32) : F32))
 
 def MC.fly_go(fly: Bool, s: State) -> State:
   match fly:
@@ -1125,7 +1269,9 @@ def MC.target_idx(px: F32, py: F32, pz: F32, +yaw: F32, +pitch: F32) -> U32:
   +sy = F32.sin(yaw)
   +cp = F32.cos(pitch)
   +sp = F32.sin(pitch)
-  MC.march_idx(30n, px, (py + 1.6 : F32), pz, (cy * cp : F32), sp, (sy * cp : F32))
+  +nsy = F32.neg(sy)
+  +ncy = F32.neg(cy)
+  MC.march_idx(30n, px, (py + 1.6 : F32), pz, (nsy * cp : F32), sp, (ncy * cp : F32))
 
 def MC.brk_go(ok: Bool, +edits: List<&2, Edit>, idx: U32) -> List<&2, Edit>:
   match ok:
