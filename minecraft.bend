@@ -39,6 +39,33 @@ type Acc is Data:
 type State is Data:
   S{seed: U32, px: F32, py: F32, pz: F32, yaw: F32, pitch: F32, vy: F32, og: Bool, fly: Bool, hb: PL.Hotbar, edits: List<&2, Edit>, hp: U32, food: U32, hurt: U32, mobs: List<&2, MB.Mob>, tickn: U32, time: F32}
 
+# ---------------- resolution ----------------
+# The display backend walks the Image quadtree on the GPU, one thread per
+# screen pixel, down to depth k = ceil_pow2(max(win_w, win_h)). Two regimes:
+# - depth < k: each rendered pixel magnifies to 2^(k-depth) screen pixels
+#   (free integer upscale, chunky retro look).
+# - depth >= k: 1:1 pixels (depth > k wastes rays point-picking tl).
+# So: match depth to the window (2^depth >= max(w,h), minimal) for 1:1, or
+# render small for speed and let the backend upscale.
+# CPU cost ~= leaves * raymarch: 128^2 ~60fps, 256^2 ~15fps, 512^2 ~4fps.
+# PRESETS (edit quality/win_w/win_h together):
+#   Smooth:   7n / 128  / 128   (60fps CPU)
+#   Balanced: 8n / 256  / 256   (~15fps CPU)
+#   Big:      9n / 512  / 512   (~4fps CPU, needs GPU for realtime)
+#   1080p:    9n / 1920 / 1080  (512 render upscaled x4, chunky 1080p)
+#   FullHD:   11n / 1920 / 1080 (true 1:1 1080p, GPU `!` only, experimental)
+# GPU NOTE: replace MC.build with MC.build! inside frame_q to run the whole
+# quadtree build on the GPU (needs clang 19+, Metal on Mac / CUDA on Linux).
+# Untested here (no GPU in this box) — keep the CPU path as fallback.
+def MC.quality() -> Nat:
+  9n
+
+def MC.win_w() -> U32:
+  1920
+
+def MC.win_h() -> U32:
+  1080
+
 # ---------------- input accumulator ----------------
 
 def MC.acc_empty() -> Acc:
@@ -132,17 +159,18 @@ def MC.is_left(+c: U32) -> Bool:
 def MC.is_right(+c: U32) -> Bool:
   Bool.or(U32.is_eq(c, 68), U32.is_eq(c, 100))
 
+# Look keys: JLIK + arrows. Linux arrows are 37-40, Mac arrows 63232-63235.
 def MC.is_lookL(+c: U32) -> Bool:
-  Bool.or(Bool.or(U32.is_eq(c, 74), U32.is_eq(c, 106)), U32.is_eq(c, 37))
+  Bool.or(Bool.or(Bool.or(U32.is_eq(c, 74), U32.is_eq(c, 106)), U32.is_eq(c, 37)), U32.is_eq(c, 63234))
 
 def MC.is_lookR(+c: U32) -> Bool:
-  Bool.or(Bool.or(U32.is_eq(c, 76), U32.is_eq(c, 108)), U32.is_eq(c, 39))
+  Bool.or(Bool.or(Bool.or(U32.is_eq(c, 76), U32.is_eq(c, 108)), U32.is_eq(c, 39)), U32.is_eq(c, 63235))
 
 def MC.is_lookU(+c: U32) -> Bool:
-  Bool.or(Bool.or(U32.is_eq(c, 73), U32.is_eq(c, 105)), U32.is_eq(c, 38))
+  Bool.or(Bool.or(Bool.or(U32.is_eq(c, 73), U32.is_eq(c, 105)), U32.is_eq(c, 38)), U32.is_eq(c, 63232))
 
 def MC.is_lookD(+c: U32) -> Bool:
-  Bool.or(Bool.or(U32.is_eq(c, 75), U32.is_eq(c, 107)), U32.is_eq(c, 40))
+  Bool.or(Bool.or(Bool.or(U32.is_eq(c, 75), U32.is_eq(c, 107)), U32.is_eq(c, 40)), U32.is_eq(c, 63233))
 
 # key-down chain (each link: match on Bool param, never computed).
 def MC.kd_hot9(on: Bool, a: Acc, +c: U32) -> Acc:
@@ -684,7 +712,7 @@ def MC.slot_block(+s: U32) -> U32:
   MC.slot_block1(U32.is_eq(s, 1), s)
 
 def MC.slot_color(x: U32, sel: U32) -> U32:
-  +slot = U32.div(x, 14)
+  +slot = U32.div(x, U32.div(MC.win_w(), 9))
   MC.cross(U32.is_eq(slot, sel), B.Block.color(MC.slot_block(slot)))
 
 def MC.hud_go(is_hud: Bool, x: U32, sel: U32, vcolor: U32) -> U32:
@@ -693,6 +721,21 @@ def MC.hud_go(is_hud: Bool, x: U32, sel: U32, vcolor: U32) -> U32:
       MC.slot_color(x, sel)
     case False{}:
       vcolor
+
+def MC.hud_bar() -> U32:
+  (MC.win_h() - 10 : U32)
+
+def MC.heart_top() -> U32:
+  (MC.win_h() - 22 : U32)
+
+def MC.heart_bot() -> U32:
+  (MC.win_h() - 12 : U32)
+
+def MC.half_w() -> U32:
+  U32.div(MC.win_w(), 2)
+
+def MC.cell_w() -> U32:
+  U32.div(MC.win_w(), 20)
 
 # Mob billboard: first mob whose 3D direction aligns with the ray.
 def MC.mob_pick(hit: Bool, color: U32, prev: U32 & Bool) -> U32 & Bool:
@@ -749,14 +792,14 @@ def MC.food_dot(+j: U32, food: U32, base: U32) -> U32:
 def MC.hearts_side(left: Bool, x: U32, hp: U32, food: U32, base: U32) -> U32:
   match left:
     case True{}:
-      MC.heart_dot(U32.div(x, 6), hp, base)
+      MC.heart_dot(U32.div(x, MC.cell_w()), hp, base)
     case False{}:
-      MC.food_dot(U32.div((x - 68 : U32), 6), food, base)
+      MC.food_dot(U32.div((x - MC.half_w() : U32), MC.cell_w()), food, base)
 
 def MC.post_hearts(is_row: Bool, +x: U32, hp: U32, food: U32, base: U32) -> U32:
   match is_row:
     case True{}:
-      MC.hearts_side(U32.is_lt(x, 64), x, hp, food, base)
+      MC.hearts_side(U32.is_lt(x, MC.half_w()), x, hp, food, base)
     case False{}:
       base
 
@@ -764,9 +807,9 @@ def MC.post_flash(base: U32, hurt: U32) -> U32:
   R.Render.hurt_flash(base, hurt)
 
 def MC.pixel_post(+x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, base: U32) -> U32:
-  +c = MC.cross(R.Render.is_cross(x, y, 128, 128), base)
-  +h = MC.hud_go(U32.is_ge(y, 118), x, sel, c)
-  +r = MC.post_hearts(Bool.and(U32.is_ge(y, 106), U32.is_lt(y, 116)), x, hp, food, h)
+  +c = MC.cross(R.Render.is_cross(x, y, MC.win_w(), MC.win_h()), base)
+  +h = MC.hud_go(U32.is_ge(y, MC.hud_bar()), x, sel, c)
+  +r = MC.post_hearts(Bool.and(U32.is_ge(y, MC.heart_top()), U32.is_lt(y, MC.heart_bot())), x, hp, food, h)
   MC.post_flash(r, hurt)
 
 def MC.pixel_pick(hit: Bool, mc: U32, +seed: U32, +edits: List<&2, Edit>, ox: F32, oy: F32, oz: F32, +dx: F32, +dy: F32, +dz: F32, +x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +time: F32) -> U32:
@@ -786,7 +829,7 @@ def MC.pixel_go(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, r: 
       MC.pixel_mob(MC.mob_dot(mobs, ox, oy, oz, dx, dy, dz), seed, edits, ox, oy, oz, dx, dy, dz, x, y, sel, hp, food, hurt, time)
 
 def MC.pixel(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, +cam: R.Cam, +x: U32, +y: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +time: F32) -> U32:
-  MC.pixel_go(seed, edits, mobs, R.Render.pixel_ray(cam, U32.to_f32(x), U32.to_f32(y), 128, 128), x, y, sel, hp, food, hurt, time)
+  MC.pixel_go(seed, edits, mobs, R.Render.pixel_ray(cam, U32.to_f32(x), U32.to_f32(y), MC.win_w(), MC.win_h()), x, y, sel, hp, food, hurt, time)
 
 def MC.build(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, +cam: R.Cam, +size: Nat, +x0: U32, +y0: U32, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +time: F32) -> Image:
   match size:
@@ -801,7 +844,7 @@ def MC.build(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, +cam: 
       Qua{tl, tr, bl, br}
 
 def MC.frame(+seed: U32, +edits: List<&2, Edit>, +mobs: List<&2, MB.Mob>, +cam: R.Cam, +sel: U32, +hp: U32, +food: U32, +hurt: U32, +time: F32) -> Image:
-  MC.build(seed, edits, mobs, cam, 7n, 0, 0, sel, hp, food, hurt, time)
+  MC.build(seed, edits, mobs, cam, MC.quality(), 0, 0, sel, hp, food, hurt, time)
 
 # ---------------- view ----------------
 
@@ -1279,4 +1322,4 @@ def MC.spawn(seed: U32) -> State:
   MC.spawn_go(s, MC.ground_y(s, 32.5, 32.5))
 
 def main() -> IO(Unit):
-  App.run(~State, ~App{view, tick}, "BendCraft", 128, 128, MC.spawn(1337))
+  App.run(~State, ~App{view, tick}, "BendCraft", MC.win_w(), MC.win_h(), MC.spawn(1337))

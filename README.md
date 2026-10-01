@@ -14,6 +14,12 @@ bend minecraft.bend -o bendcraft
 ./bendcraft --threads 8
 ```
 
+Default is a 1920x1080 window with a 512x512 render (GPU-upscaled x4,
+chunky retro pixels). For smooth CPU play, set `MC.quality()` to `8n`
+with a 256x256 window (~15fps), or `7n`/128x128 (~60fps); see the
+resolution comment at the top of `minecraft.bend`. True 1:1 1080p needs
+an depth-11 image plus the documented GPU `!` swap (experimental).
+
 `game.bend` is a lighter 256x256 entry with a placeholder renderer.
 
 ## Controls
